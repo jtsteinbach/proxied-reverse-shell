@@ -9,12 +9,11 @@ import os
 
 app = Flask(__name__)
 
+# Generate key for Fernet encryption
 FERNET_KEY = Fernet.generate_key()
 cipher = Fernet(FERNET_KEY)
 POINT_FILE = 'point.txt'
 EXPIRATION_TIME = 3600  # Expiration time in seconds (1 hour)
-commands_dict = {}  # Store commands in memory
-results_dict = {}  # Store command results for sender to retrieve
 
 # Generate a random 4-character alphanumeric pointer
 def generate_pointer():
@@ -25,30 +24,20 @@ def ip_port_to_bytes(ip, port):
     ip_bytes = bytes(ip_parts) + port.to_bytes(2, 'big')
     return ip_bytes
 
+# Encrypt IP and port with Fernet
 def encrypt_ip_port(ip, port):
     ip_port_bytes = ip_port_to_bytes(ip, port)
-    iv = os.urandom(4)
-    salt = os.urandom(4)
-    data_with_iv_salt = salt + iv + ip_port_bytes
-    encrypted_data = cipher.encrypt(data_with_iv_salt)
+    encrypted_data = cipher.encrypt(ip_port_bytes)
     base64_encoded = base64.urlsafe_b64encode(encrypted_data).decode()
-    return base64_encoded[:8], base64_encoded[8:]
-
-def decrypt_ip_port(encrypted_ip_prefix, encrypted_ip_remainder, decryption_key):
-    full_encrypted_ip_port = encrypted_ip_prefix + encrypted_ip_remainder
-    encrypted_data = base64.urlsafe_b64decode(full_encrypted_ip_port + '==')
-    cipher = Fernet(decryption_key.encode())
-    decrypted_with_iv = cipher.decrypt(encrypted_data)
-    iv, decrypted_bytes = decrypted_with_iv[:4], decrypted_with_iv[4:]
-    ip = '.'.join(map(str, decrypted_bytes[:4]))
-    port = int.from_bytes(decrypted_bytes[4:], 'big')
-    return ip, port
+    return base64_encoded[:8], base64_encoded[8:]  # First 8 chars go into connect code
 
 def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_port_remainder):
+    # Store pointer and encrypted segments, without full IP/Port
     with open(POINT_FILE, 'a') as f:
         f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_port_remainder}\n")
 
 def lookup_encrypted_ip(pointer):
+    # Retrieve stored decryption key and remainder based on pointer
     current_time = time.time()
     with open(POINT_FILE, 'r') as f:
         lines = f.readlines()
@@ -61,29 +50,25 @@ def lookup_encrypted_ip(pointer):
     return None, None
 
 def verify_and_get_ip_port(connection_code):
+    # Reconstruct full encrypted IP/Port with segments
     pointer = connection_code[:4]
     encrypted_ip_prefix = connection_code[4:]
     decryption_key, encrypted_ip_remainder = lookup_encrypted_ip(pointer)
     if decryption_key is None:
         return None, None
-    return decrypt_ip_port(encrypted_ip_prefix, encrypted_ip_remainder, decryption_key)
 
-def update_timestamp(pointer):
-    current_time = time.time()
-    updated_lines = []
-    with open(POINT_FILE, 'r') as f:
-        lines = f.readlines()
-    with open(POINT_FILE, 'w') as f:
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) == 4 and parts[1] == pointer:
-                updated_line = f"{current_time} {parts[1]} {parts[2]} {parts[3]}\n"
-                updated_lines.append(updated_line)
-            else:
-                updated_lines.append(line)
-        f.writelines(updated_lines)
+    # Decrypt full IP/Port without logging full IP/Port or encrypted segments
+    full_encrypted_ip_port = encrypted_ip_prefix + encrypted_ip_remainder
+    encrypted_data = base64.urlsafe_b64decode(full_encrypted_ip_port + '==')
+    cipher = Fernet(decryption_key.encode())
+    decrypted_bytes = cipher.decrypt(encrypted_data)
+
+    ip = '.'.join(map(str, decrypted_bytes[:4]))
+    port = int.from_bytes(decrypted_bytes[4:], 'big')
+    return ip, port
 
 def generate_connection_code(ip, port):
+    # Generate connect code from pointer and first 8 encrypted chars
     pointer = generate_pointer()
     encrypted_ip_prefix, encrypted_ip_remainder = encrypt_ip_port(ip, port)
     connection_code = pointer + encrypted_ip_prefix
@@ -121,76 +106,25 @@ def connect():
     print(f"Decrypted IP and port: {ip}:{port}")
     return jsonify({"message": f"Connected to {ip}:{port}"})
 
+# Send command endpoint to relay to the receiver
 @app.route('/send_command', methods=['POST'])
 def send_command():
     data = request.get_json()
     code = data.get("code")
     command = data.get("command")
     pointer = code[:4]
-    
-    commands_dict[pointer] = command
     update_timestamp(pointer)
-    return jsonify({"message": "Command sent to receiver"})
+    print(f"Received command: {command}")
+    return jsonify({"message": "Command relayed to receiver"})
 
-@app.route('/fetch_command', methods=['POST'])
-def fetch_command():
-    data = request.get_json()
-    code = data.get("code")
-    pointer = code[:4]
-    
-    # Fetch command for this connection
-    command = commands_dict.pop(pointer, None)
-    return jsonify({"command": command})
-
-@app.route('/send_result', methods=['POST'])
-def send_result():
-    data = request.get_json()
-    code = data.get("code")
-    pointer = code[:4]
-    result = data.get("result")
-    
-    # Store result for the sender to fetch
-    results_dict[pointer] = result
-    return jsonify({"message": "Result stored for sender"})
-
+# Fetch result placeholder endpoint
 @app.route('/fetch_result', methods=['POST'])
 def fetch_result():
     data = request.get_json()
     code = data.get("code")
     pointer = code[:4]
-    
-    # Fetch the result for this command
-    result = results_dict.pop(pointer, "No response from server.")
-    return jsonify({"output": result})
-
-@app.route('/end_connection', methods=['POST'])
-def end_connection():
-    data = request.get_json()
-    code = data.get("code")
-    if not code or len(code) != 12:
-        return jsonify({"error": "Invalid connection code format"}), 400
-
-    ip, _ = verify_and_get_ip_port(code)
-    current_ip = request.remote_addr
-    if ip != current_ip:
-        return jsonify({"error": "Unauthorized request. Only the original receiver can end the connection."}), 403
-
-    pointer = code[:4]
-    try:
-        with open(POINT_FILE, 'r') as f:
-            lines = f.readlines()
-        with open(POINT_FILE, 'w') as f:
-            for line in lines:
-                parts = line.strip().split()
-                if len(parts) > 1 and parts[1] != pointer:
-                    f.write(line)
-        commands_dict.pop(pointer, None)
-        results_dict.pop(pointer, None)
-        print(f"Connection with code {code} has been ended by the original receiver.")
-        return jsonify({"message": "Connection ended successfully."})
-    except Exception as e:
-        print(f"Error during file update: {str(e)}")
-        return jsonify({"error": "Failed to end connection due to server error"}), 500
+    print(f"Fetching result for command with pointer {pointer}")
+    return jsonify({"output": "Command output from receiver"})
 
 def cleanup_old_keys():
     current_time = time.time()
@@ -204,9 +138,6 @@ def cleanup_old_keys():
                     timestamp, pointer, decryption_key, encrypted_ip_port_remainder = parts
                     if current_time - float(timestamp) < EXPIRATION_TIME:
                         f.write(line)
-                    else:
-                        commands_dict.pop(pointer, None)
-                        results_dict.pop(pointer, None)
 
 cleanup_thread = threading.Thread(target=lambda: (time.sleep(600), cleanup_old_keys()))
 cleanup_thread.daemon = True

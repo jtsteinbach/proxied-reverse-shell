@@ -76,6 +76,22 @@ def generate_connection_code(ip, port):
     store_encrypted_ip(timestamp, pointer, FERNET_KEY, encrypted_ip_remainder)
     return connection_code
 
+def update_timestamp(pointer):
+    # Update the timestamp for an active connection
+    current_time = time.time()
+    updated_lines = []
+    with open(POINT_FILE, 'r') as f:
+        lines = f.readlines()
+    with open(POINT_FILE, 'w') as f:
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) == 4 and parts[1] == pointer:
+                updated_line = f"{current_time} {parts[1]} {parts[2]} {parts[3]}\n"
+                updated_lines.append(updated_line)
+            else:
+                updated_lines.append(line)
+        f.writelines(updated_lines)
+
 @app.route('/get_code', methods=['POST'])
 def get_code():
     data = request.get_json()

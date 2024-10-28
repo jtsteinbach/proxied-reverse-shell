@@ -6,7 +6,6 @@ import string
 import base64
 import time
 import os
-import subprocess
 
 app = Flask(__name__)
 
@@ -15,6 +14,7 @@ cipher = Fernet(FERNET_KEY)
 POINT_FILE = 'point.txt'
 EXPIRATION_TIME = 3600  # Expiration time in seconds (1 hour)
 commands_dict = {}  # Store commands in memory
+results_dict = {}  # Store command results for sender to retrieve
 
 # Generate a random 4-character alphanumeric pointer
 def generate_pointer():
@@ -25,7 +25,6 @@ def ip_port_to_bytes(ip, port):
     ip_bytes = bytes(ip_parts) + port.to_bytes(2, 'big')
     return ip_bytes
 
-# Encrypt IP and port, adding a random IV and salt for uniqueness
 def encrypt_ip_port(ip, port):
     ip_port_bytes = ip_port_to_bytes(ip, port)
     iv = os.urandom(4)
@@ -128,8 +127,7 @@ def send_command():
     code = data.get("code")
     command = data.get("command")
     pointer = code[:4]
-
-    # Store command in memory and update timestamp
+    
     commands_dict[pointer] = command
     update_timestamp(pointer)
     return jsonify({"message": "Command sent to receiver"})
@@ -139,20 +137,31 @@ def fetch_command():
     data = request.get_json()
     code = data.get("code")
     pointer = code[:4]
-    command = commands_dict.pop(pointer, None)  # Retrieve and remove the command
+    
+    # Fetch command for this connection
+    command = commands_dict.pop(pointer, None)
+    return jsonify({"command": command})
 
-    if command:
-        try:
-            # Execute the command and capture the output
-            process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            output, error = process.communicate()
-            if error:
-                return jsonify({"output": error.decode("utf-8")})
-            return jsonify({"output": output.decode("utf-8")})
-        except Exception as e:
-            return jsonify({"error": f"Command execution failed: {str(e)}"})
-    else:
-        return jsonify({"output": "No command found"})
+@app.route('/send_result', methods=['POST'])
+def send_result():
+    data = request.get_json()
+    code = data.get("code")
+    pointer = code[:4]
+    result = data.get("result")
+    
+    # Store result for the sender to fetch
+    results_dict[pointer] = result
+    return jsonify({"message": "Result stored for sender"})
+
+@app.route('/fetch_result', methods=['POST'])
+def fetch_result():
+    data = request.get_json()
+    code = data.get("code")
+    pointer = code[:4]
+    
+    # Fetch the result for this command
+    result = results_dict.pop(pointer, "No response from server.")
+    return jsonify({"output": result})
 
 @app.route('/end_connection', methods=['POST'])
 def end_connection():
@@ -168,7 +177,6 @@ def end_connection():
 
     pointer = code[:4]
     try:
-        # Remove the connection entry with the matching pointer
         with open(POINT_FILE, 'r') as f:
             lines = f.readlines()
         with open(POINT_FILE, 'w') as f:
@@ -176,7 +184,8 @@ def end_connection():
                 parts = line.strip().split()
                 if len(parts) > 1 and parts[1] != pointer:
                     f.write(line)
-        commands_dict.pop(pointer, None)  # Clear any command for this connection
+        commands_dict.pop(pointer, None)
+        results_dict.pop(pointer, None)
         print(f"Connection with code {code} has been ended by the original receiver.")
         return jsonify({"message": "Connection ended successfully."})
     except Exception as e:
@@ -196,7 +205,8 @@ def cleanup_old_keys():
                     if current_time - float(timestamp) < EXPIRATION_TIME:
                         f.write(line)
                     else:
-                        commands_dict.pop(pointer, None)  # Clear expired command from memory
+                        commands_dict.pop(pointer, None)
+                        results_dict.pop(pointer, None)
 
 cleanup_thread = threading.Thread(target=lambda: (time.sleep(600), cleanup_old_keys()))
 cleanup_thread.daemon = True

@@ -19,21 +19,49 @@ EXPIRATION_TIME = 3600  # Expiration time in seconds (1 hour)
 def generate_pointer():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=4))
 
+# Convert IP and port to bytes
 def ip_port_to_bytes(ip, port):
     ip_parts = [int(part) for part in ip.split('.')]
     ip_bytes = bytes(ip_parts) + port.to_bytes(2, 'big')
     return ip_bytes
 
+# Encrypt IP and port, adding a random IV for uniqueness
 def encrypt_ip_port(ip, port):
     ip_port_bytes = ip_port_to_bytes(ip, port)
-    encrypted_data = cipher.encrypt(ip_port_bytes)
+    
+    # Generate a random IV (4 bytes, for example)
+    iv = os.urandom(4)  # Adjust IV size as needed for security
+    data_with_iv = iv + ip_port_bytes
+    
+    # Encrypt the data with IV
+    encrypted_data = cipher.encrypt(data_with_iv)
     base64_encoded = base64.urlsafe_b64encode(encrypted_data).decode()
+    
+    # Return first 8 characters and remainder for the connection code
     return base64_encoded[:8], base64_encoded[8:]
 
+# Decrypt IP and port, handling IV
+def decrypt_ip_port(encrypted_ip_prefix, encrypted_ip_remainder, decryption_key):
+    full_encrypted_ip_port = encrypted_ip_prefix + encrypted_ip_remainder
+    encrypted_data = base64.urlsafe_b64decode(full_encrypted_ip_port + '==')
+    cipher = Fernet(decryption_key.encode())
+    
+    # Decrypt the data, which includes the IV + IP:PORT data
+    decrypted_with_iv = cipher.decrypt(encrypted_data)
+    iv, decrypted_bytes = decrypted_with_iv[:4], decrypted_with_iv[4:]  # Separate IV and actual data
+    
+    # Translate decrypted bytes back into IP and port
+    ip = '.'.join(map(str, decrypted_bytes[:4]))
+    port = int.from_bytes(decrypted_bytes[4:], 'big')
+    
+    return ip, port
+
+# Store timestamp, pointer, decryption key, and encrypted IP remainder
 def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_port_remainder):
     with open(POINT_FILE, 'a') as f:
         f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_port_remainder}\n")
 
+# Lookup encrypted IP and decryption key by pointer
 def lookup_encrypted_ip(pointer):
     current_time = time.time()
     with open(POINT_FILE, 'r') as f:
@@ -46,19 +74,14 @@ def lookup_encrypted_ip(pointer):
                 return decryption_key, encrypted_ip_port_remainder
     return None, None
 
+# Verify and get IP and port from the connection code
 def verify_and_get_ip_port(connection_code):
     pointer = connection_code[:4]
     encrypted_ip_prefix = connection_code[4:]
     decryption_key, encrypted_ip_remainder = lookup_encrypted_ip(pointer)
     if decryption_key is None:
         return None, None
-    full_encrypted_ip_port = encrypted_ip_prefix + encrypted_ip_remainder
-    encrypted_data = base64.urlsafe_b64decode(full_encrypted_ip_port + '==')
-    cipher = Fernet(decryption_key.encode())
-    decrypted_bytes = cipher.decrypt(encrypted_data)
-    ip = '.'.join(map(str, decrypted_bytes[:4]))
-    port = int.from_bytes(decrypted_bytes[4:], 'big')
-    return ip, port
+    return decrypt_ip_port(encrypted_ip_prefix, encrypted_ip_remainder, decryption_key)
 
 # Function to update the timestamp in point.txt
 def update_timestamp(pointer):
@@ -76,6 +99,7 @@ def update_timestamp(pointer):
                 updated_lines.append(line)
         f.writelines(updated_lines)
 
+# Generate a connection code and store encrypted details
 def generate_connection_code(ip, port):
     pointer = generate_pointer()
     encrypted_ip_prefix, encrypted_ip_remainder = encrypt_ip_port(ip, port)

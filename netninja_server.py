@@ -34,8 +34,12 @@ def encrypt_ip_port(ip, port):
     return base64_encoded[:8], base64_encoded[8:]
 
 def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_port_remainder):
-    with open(POINT_FILE, 'a') as f:
-        f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_port_remainder}\n")
+    try:
+        with open(POINT_FILE, 'a') as f:
+            f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_port_remainder}\n")
+        print(f"Stored pointer {pointer} in {POINT_FILE}")
+    except Exception as e:
+        print(f"Error writing to {POINT_FILE}: {e}")
 
 def lookup_encrypted_ip(pointer):
     try:
@@ -94,6 +98,7 @@ def update_timestamp(pointer):
                 updated_lines.append(line)
 
         f.writelines(updated_lines)
+    print(f"Updated timestamp for pointer {pointer}")
 
 def generate_connection_code(ip, port):
     pointer = generate_pointer()

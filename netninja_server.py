@@ -16,7 +16,7 @@ app = Flask(__name__)
 FERNET_KEY = Fernet.generate_key()
 cipher = Fernet(FERNET_KEY)
 POINT_FILE = 'point.txt'
-EXPIRATION_TIME = 3600  # Expiration in seconds (1 hour)
+EXPIRATION_TIME = 1800  # Expiration in seconds (1 hour)
 MAX_COMMAND_ATTEMPTS = 10  # Limit the number of attempts to fetch command results
 
 # Store in-memory command and result dictionaries

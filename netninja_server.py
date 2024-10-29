@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 import threading
 import random
 import string
@@ -10,8 +10,8 @@ import os
 
 app = Flask(__name__)
 
-# Generate a secure key for Fernet encryption
-FERNET_KEY = Fernet.generate_key()
+# Ensure FERNET_KEY is consistent across all instances of the server
+FERNET_KEY = Fernet.generate_key()  # In production, securely store and reuse this key across sessions
 cipher = Fernet(FERNET_KEY)
 POINT_FILE = 'point.txt'
 EXPIRATION_TIME = 3600  # Expiration time in seconds (1 hour)
@@ -25,17 +25,15 @@ def ip_port_to_bytes(ip, port):
     ip_bytes = bytes(ip_parts) + port.to_bytes(2, 'big')
     return ip_bytes
 
-# Encrypt IP and port with Fernet
 def encrypt_ip_port(ip, port):
     ip_port_bytes = ip_port_to_bytes(ip, port)
     encrypted_data = cipher.encrypt(ip_port_bytes)
     base64_encoded = base64.urlsafe_b64encode(encrypted_data).decode()
-    return base64_encoded[:8], base64_encoded[8:]  # Use the first 8 chars for the connect code
+    return base64_encoded[:8], base64_encoded[8:]
 
-def store_encrypted_ip(timestamp, pointer, encrypted_ip_port_remainder):
-    # Store pointer and encrypted remainder in point.txt without storing the full IP/Port
+def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_port_remainder):
     with open(POINT_FILE, 'a') as f:
-        f.write(f"{timestamp} {pointer} {encrypted_ip_port_remainder}\n")
+        f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_port_remainder}\n")
 
 def lookup_encrypted_ip(pointer):
     current_time = time.time()
@@ -43,41 +41,67 @@ def lookup_encrypted_ip(pointer):
         lines = f.readlines()
     for line in lines:
         parts = line.strip().split()
-        if len(parts) == 3:
-            timestamp, stored_pointer, encrypted_ip_port_remainder = parts
+        if len(parts) == 4:
+            timestamp, stored_pointer, decryption_key, encrypted_ip_port_remainder = parts
             if stored_pointer == pointer and current_time - float(timestamp) < EXPIRATION_TIME:
-                return encrypted_ip_port_remainder
-    return None
+                return decryption_key, encrypted_ip_port_remainder
+    return None, None
 
-# Decrypt and verify IP and Port using translation process from the pointer and encrypted data
 def verify_and_get_ip_port(connection_code):
-    pointer = connection_code[:4]
-    encrypted_ip_prefix = connection_code[4:]
-    encrypted_ip_remainder = lookup_encrypted_ip(pointer)
+    try:
+        pointer = connection_code[:4]
+        encrypted_ip_prefix = connection_code[4:]
+        decryption_key, encrypted_ip_remainder = lookup_encrypted_ip(pointer)
 
-    if encrypted_ip_remainder is None:
-        return None, None  # Connection code is invalid or expired
+        if decryption_key is None:
+            return None, None  # Connection code is invalid or expired
 
-    full_encrypted_ip_port = encrypted_ip_prefix + encrypted_ip_remainder
-    encrypted_data = base64.urlsafe_b64decode(full_encrypted_ip_port + '==')
-    decrypted_bytes = cipher.decrypt(encrypted_data)
+        full_encrypted_ip_port = encrypted_ip_prefix + encrypted_ip_remainder
+        encrypted_data = base64.urlsafe_b64decode(full_encrypted_ip_port + '==')
+        cipher = Fernet(decryption_key.encode())
+        decrypted_bytes = cipher.decrypt(encrypted_data)
 
-    ip = '.'.join(map(str, decrypted_bytes[:4]))
-    port = int.from_bytes(decrypted_bytes[4:], 'big')
-    return ip, port
+        ip = '.'.join(map(str, decrypted_bytes[:4]))
+        port = int.from_bytes(decrypted_bytes[4:], 'big')
+        return ip, port
+    except InvalidToken as e:
+        print(f"Decryption failed: {e}")
+        return None, None
+    except Exception as e:
+        print(f"Unexpected error during decryption: {e}")
+        return None, None
+
+def update_timestamp(pointer):
+    current_time = time.time()
+    updated_lines = []
+    
+    with open(POINT_FILE, 'r') as f:
+        lines = f.readlines()
+
+    with open(POINT_FILE, 'w') as f:
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) == 4 and parts[1] == pointer:
+                updated_line = f"{current_time} {parts[1]} {parts[2]} {parts[3]}\n"
+                updated_lines.append(updated_line)
+            else:
+                updated_lines.append(line)
+
+        f.writelines(updated_lines)
 
 def generate_connection_code(ip, port):
     pointer = generate_pointer()
     encrypted_ip_prefix, encrypted_ip_remainder = encrypt_ip_port(ip, port)
     connection_code = pointer + encrypted_ip_prefix
     timestamp = time.time()
-    store_encrypted_ip(timestamp, pointer, encrypted_ip_remainder)
+    store_encrypted_ip(timestamp, pointer, FERNET_KEY, encrypted_ip_remainder)
     return connection_code
 
 @app.route('/get_code', methods=['POST'])
 def get_code():
     data = request.get_json()
     port = data.get("port")
+
     if not port:
         return jsonify({"error": "Port is required"}), 400
 
@@ -128,7 +152,6 @@ def send_command():
     pointer = code[:4]
 
     try:
-        # Run the command
         process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         output, error = process.communicate()
         
@@ -156,7 +179,6 @@ def end_connection():
 
     pointer = code[:4]
 
-    # Remove the connection entry with the matching pointer
     try:
         with open(POINT_FILE, 'r') as f:
             lines = f.readlines()
@@ -180,8 +202,8 @@ def cleanup_old_keys():
         with open(POINT_FILE, 'w') as f:
             for line in lines:
                 parts = line.strip().split()
-                if len(parts) == 3:
-                    timestamp, pointer, encrypted_ip_port_remainder = parts
+                if len(parts) == 4:
+                    timestamp, pointer, decryption_key, encrypted_ip_port_remainder = parts
                     if current_time - float(timestamp) < EXPIRATION_TIME:
                         f.write(line)
 

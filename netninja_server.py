@@ -9,42 +9,37 @@ import os
 
 app = Flask(__name__)
 
-# Generate a secure encryption key for IP/port encryption
+# Generate a secure key for encryption
 FERNET_KEY = Fernet.generate_key()
 cipher = Fernet(FERNET_KEY)
 POINT_FILE = 'point.txt'
-EXPIRATION_TIME = 3600  # 1 hour for connection code expiration
+EXPIRATION_TIME = 3600  # Expiration in seconds (1 hour)
+MAX_COMMAND_ATTEMPTS = 10  # Limit the number of attempts to fetch command results
 
-# In-memory dictionaries for command and result storage
+# Store in-memory command and result dictionaries
 commands_dict = {}  # { pointer: command }
 results_dict = {}   # { pointer: result }
 
-# Generate a random 4-character pointer to identify sessions uniquely
+# Generate a random 4-character pointer
 def generate_pointer():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=4))
 
-# Convert IP and port to bytes, preparing for encryption
 def ip_port_to_bytes(ip, port):
     ip_parts = [int(part) for part in ip.split('.')]
     ip_bytes = bytes(ip_parts) + port.to_bytes(2, 'big')
     return ip_bytes
 
-# Encrypt IP and port, generating the connection code at a specified offset
-def encrypt_ip_port(ip, port, offset=20):
+def encrypt_ip_port(ip, port):
     ip_port_bytes = ip_port_to_bytes(ip, port)
     encrypted_data = cipher.encrypt(ip_port_bytes)
     base64_encoded = base64.urlsafe_b64encode(encrypted_data).decode()
-    connection_code = base64_encoded[offset:offset + 8]
-    encrypted_data_placeholder = base64_encoded[:offset] + '*' + base64_encoded[offset + 8:]
-    return connection_code, encrypted_data_placeholder
+    return base64_encoded[20:28], base64_encoded[:20] + '*' + base64_encoded[28:]
 
-# Store encrypted IP/port in the point file with a placeholder for security
-def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_data_placeholder):
+def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_placeholder):
     with open(POINT_FILE, 'a') as f:
-        f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_data_placeholder}\n")
+        f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_placeholder}\n")
     print(f"Stored pointer {pointer} in point.txt")
 
-# Look up the encrypted IP/port based on the pointer, retrieving the decryption key
 def lookup_encrypted_ip(pointer):
     current_time = time.time()
     with open(POINT_FILE, 'r') as f:
@@ -52,21 +47,19 @@ def lookup_encrypted_ip(pointer):
     for line in lines:
         parts = line.strip().split()
         if len(parts) == 4:
-            timestamp, stored_pointer, decryption_key, encrypted_data_placeholder = parts
+            timestamp, stored_pointer, decryption_key, encrypted_ip_placeholder = parts
             if stored_pointer == pointer and current_time - float(timestamp) < EXPIRATION_TIME:
-                return decryption_key, encrypted_data_placeholder
+                return decryption_key, encrypted_ip_placeholder
     return None, None
 
-# Verify and decrypt the IP and port using the connection code
-def verify_and_get_ip_port(connection_code, offset=20):
+def verify_and_get_ip_port(connection_code):
     pointer = connection_code[:4]
-    encrypted_ip_prefix = connection_code[4:]
-    decryption_key, encrypted_data_placeholder = lookup_encrypted_ip(pointer)
+    encrypted_code_section = connection_code[4:]
+    decryption_key, encrypted_ip_placeholder = lookup_encrypted_ip(pointer)
     if not decryption_key:
         return None, None
 
-    # Insert connection code back into encrypted data
-    full_encrypted_ip_port = encrypted_data_placeholder.replace('*', encrypted_ip_prefix)
+    full_encrypted_ip_port = encrypted_ip_placeholder.replace('*', encrypted_code_section)
     encrypted_data = base64.urlsafe_b64decode(full_encrypted_ip_port + '==')
     cipher = Fernet(decryption_key.encode())
     decrypted_bytes = cipher.decrypt(encrypted_data)
@@ -75,7 +68,6 @@ def verify_and_get_ip_port(connection_code, offset=20):
     port = int.from_bytes(decrypted_bytes[4:], 'big')
     return ip, port
 
-# Update the timestamp to extend the session expiration time
 def update_timestamp(pointer):
     current_time = time.time()
     updated_lines = []
@@ -91,12 +83,11 @@ def update_timestamp(pointer):
                 updated_lines.append(line)
         f.writelines(updated_lines)
 
-# Generate a connection code and store encrypted IP/port
-def generate_connection_code(ip, port, offset=20):
+def generate_connection_code(ip, port):
     pointer = generate_pointer()
-    connection_code, encrypted_data_placeholder = encrypt_ip_port(ip, port, offset)
+    connection_code, encrypted_ip_placeholder = encrypt_ip_port(ip, port)
     timestamp = time.time()
-    store_encrypted_ip(timestamp, pointer, FERNET_KEY, encrypted_data_placeholder)
+    store_encrypted_ip(timestamp, pointer, FERNET_KEY, encrypted_ip_placeholder)
     return pointer + connection_code
 
 @app.route('/get_code', methods=['POST'])
@@ -121,6 +112,7 @@ def get_code():
 def connect():
     data = request.get_json()
     connection_code = data.get("code")
+    print(f"Received connection request with code: {connection_code}")
     if not connection_code or len(connection_code) != 12:
         return jsonify({"error": "Invalid connection code format"}), 400
 
@@ -188,9 +180,8 @@ def end_connection():
     pointer = code[:4]
 
     ip, _ = verify_and_get_ip_port(code)
-    current_ip = request.remote_addr
-    if ip != current_ip:
-        return jsonify({"error": "Unauthorized request. Only the original receiver can end the connection."}), 403
+    if request.remote_addr != ip:
+        return jsonify({"error": "Unauthorized request."}), 403
 
     with open(POINT_FILE, 'r') as f:
         lines = f.readlines()
@@ -204,7 +195,6 @@ def end_connection():
     print(f"Connection with code {code} has been ended.")
     return jsonify({"message": "Connection ended successfully."})
 
-# Background cleanup task for expired keys in point.txt
 def cleanup_old_keys():
     current_time = time.time()
     if os.path.exists(POINT_FILE):
@@ -214,7 +204,7 @@ def cleanup_old_keys():
             for line in lines:
                 parts = line.strip().split()
                 if len(parts) == 4:
-                    timestamp, pointer, decryption_key, encrypted_ip_port_remainder = parts
+                    timestamp, pointer, decryption_key, encrypted_ip_placeholder = parts
                     if current_time - float(timestamp) < EXPIRATION_TIME:
                         f.write(line)
 

@@ -6,7 +6,7 @@ import string
 import base64
 import time
 import os
-import subprocess
+import socket
 
 app = Flask(__name__)
 
@@ -16,8 +16,6 @@ cipher = Fernet(FERNET_KEY)
 POINT_FILE = 'point.txt'
 EXPIRATION_TIME = 3600  # Expiration in seconds (1 hour)
 OFFSET_POSITION = 20  # Offset position within the encrypted data
-
-commands_output = {}  # Dictionary to store command outputs by connection code
 
 # Generate a random 4-character pointer
 def generate_pointer():
@@ -149,28 +147,17 @@ def send_command():
     pointer = code[:4]
     print(f"Received command: {command} for code: {code}")
 
+    # Relay command to the target IP and port
     try:
-        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        output, error = process.communicate()
-
-        if error:
-            commands_output[code] = error.decode("utf-8")
-        else:
-            commands_output[code] = output.decode("utf-8")
-
-        update_timestamp(pointer)
-        return jsonify({"message": "Command sent successfully"})
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((ip, port))
+            s.sendall(command.encode())
+            output = s.recv(4096).decode()  # Adjust buffer size as needed
+            update_timestamp(pointer)
+            return jsonify({"output": output})
     except Exception as e:
-        print(f"Command execution failed: {str(e)}")
-        return jsonify({"error": f"Command execution failed: {str(e)}"}), 500
-
-@app.route('/fetch_result', methods=['POST'])
-def fetch_result():
-    data = request.get_json()
-    code = data.get("code")
-
-    output = commands_output.pop(code, "No response from server.")
-    return jsonify({"output": output})
+        print(f"Command relay failed: {str(e)}")
+        return jsonify({"error": f"Command relay failed: {str(e)}"}), 500
 
 @app.route('/end_connection', methods=['POST'])
 def end_connection():
@@ -194,8 +181,6 @@ def end_connection():
                 parts = line.strip().split()
                 if len(parts) > 1 and parts[1] != pointer:
                     f.write(line)
-
-        commands_output.pop(code, None)  # Immediately remove any associated output
         print(f"Connection with code {code} has been ended by the original receiver.")
         return jsonify({"message": "Connection ended successfully."})
     except Exception as e:

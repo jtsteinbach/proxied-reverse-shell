@@ -41,7 +41,6 @@ def encrypt_ip_port(ip, port):
 def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_placeholder):
     with open(POINT_FILE, 'a') as f:
         f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_placeholder}\n")
-    #print(f"Stored pointer {pointer} in point.txt")
 
 def lookup_encrypted_ip(pointer):
     current_time = time.time()
@@ -106,7 +105,6 @@ def get_code():
 
     try:
         connection_code = generate_connection_code(client_ip, port)
-        #print(f"Generated connection code: {connection_code}")
         return jsonify({"code": connection_code})
     except Exception as e:
         return jsonify({"error": f"Failed to create connection code: {str(e)}"}), 500
@@ -115,16 +113,13 @@ def get_code():
 def connect():
     data = request.get_json()
     connection_code = data.get("code")
-    #print(f"Received connection request with code: {connection_code}")
     if not connection_code or len(connection_code) != 12:
         return jsonify({"error": "Invalid connection code format"}), 400
 
     ip, port = verify_and_get_ip_port(connection_code)
     if ip is None or port is None:
-        #print("Pointer not found or expired.")
         return jsonify({"error": "Invalid or expired connection code"}), 400
 
-    #print(f"Decrypted IP and port: {ip}:{port}")
     return jsonify({"message": f"Connected to {ip}:{port}"})
 
 @app.route('/send_command', methods=['POST'])
@@ -143,7 +138,6 @@ def send_command():
 
     commands_dict[pointer] = command
     update_timestamp(pointer)
-    #print(f"Received command: {command} for pointer: {pointer}")
     return jsonify({"message": "Command sent to receiver"})
 
 @app.route('/fetch_command', methods=['POST'])
@@ -153,9 +147,11 @@ def fetch_command():
     pointer = code[:4]
 
     command = commands_dict.pop(pointer, None)
-    if not command:
-        return jsonify({"command": "None"})
-    return jsonify({"command": command})
+    if command:
+        return jsonify({"command": command})  # Send the command if available
+    
+    # Return 'No Content' status with 204 when no command is available
+    return '', 204
 
 @app.route('/send_result', methods=['POST'])
 def send_result():
@@ -195,7 +191,6 @@ def end_connection():
                 f.write(line)
     commands_dict.pop(pointer, None)
     results_dict.pop(pointer, None)
-    #print(f"Connection with code {code} has been ended.")
     return jsonify({"message": "Connection ended successfully."})
 
 def cleanup_old_keys():

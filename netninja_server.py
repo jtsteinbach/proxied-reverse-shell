@@ -10,13 +10,15 @@ import os
 
 app = Flask(__name__)
 
-# Ensure FERNET_KEY is consistent across all instances of the server
-FERNET_KEY = Fernet.generate_key()  # In production, securely store and reuse this key across sessions
+FERNET_KEY = Fernet.generate_key()
 cipher = Fernet(FERNET_KEY)
 POINT_FILE = 'point.txt'
 EXPIRATION_TIME = 3600  # Expiration time in seconds (1 hour)
 
-# Generate a random 4-character alphanumeric pointer
+# Ensure point.txt file exists
+if not os.path.exists(POINT_FILE):
+    open(POINT_FILE, 'w').close()
+
 def generate_pointer():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=4))
 
@@ -36,16 +38,20 @@ def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_port_rem
         f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_port_remainder}\n")
 
 def lookup_encrypted_ip(pointer):
-    current_time = time.time()
-    with open(POINT_FILE, 'r') as f:
-        lines = f.readlines()
-    for line in lines:
-        parts = line.strip().split()
-        if len(parts) == 4:
-            timestamp, stored_pointer, decryption_key, encrypted_ip_port_remainder = parts
-            if stored_pointer == pointer and current_time - float(timestamp) < EXPIRATION_TIME:
-                return decryption_key, encrypted_ip_port_remainder
-    return None, None
+    try:
+        current_time = time.time()
+        with open(POINT_FILE, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) == 4:
+                timestamp, stored_pointer, decryption_key, encrypted_ip_port_remainder = parts
+                if stored_pointer == pointer and current_time - float(timestamp) < EXPIRATION_TIME:
+                    return decryption_key, encrypted_ip_port_remainder
+        return None, None
+    except FileNotFoundError:
+        print(f"{POINT_FILE} not found.")
+        return None, None
 
 def verify_and_get_ip_port(connection_code):
     try:

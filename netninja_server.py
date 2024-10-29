@@ -6,6 +6,7 @@ import string
 import base64
 import time
 import os
+import subprocess
 
 app = Flask(__name__)
 
@@ -31,12 +32,13 @@ def encrypt_ip_port(ip, port):
     ip_port_bytes = ip_port_to_bytes(ip, port)
     encrypted_data = cipher.encrypt(ip_port_bytes)
     base64_encoded = base64.urlsafe_b64encode(encrypted_data).decode()
-    # Extract connection code from OFFSET_POSITION (20 characters in)
+    # Extract connection code from a later offset
     connection_code = base64_encoded[OFFSET_POSITION:OFFSET_POSITION + 8]
+    # Insert a placeholder '*' in the encrypted data
     encrypted_data_with_placeholder = base64_encoded[:OFFSET_POSITION] + '*' + base64_encoded[OFFSET_POSITION + 8:]
     return connection_code, encrypted_data_with_placeholder
 
-# Store encrypted IP in point.txt with a placeholder for connection code
+# Store only the encrypted IP with the placeholder for the connection code
 def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_placeholder):
     with open(POINT_FILE, 'a') as f:
         f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_placeholder}\n")

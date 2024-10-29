@@ -154,7 +154,7 @@ def fetch_command():
 
     command = commands_dict.pop(pointer, None)
     if not command:
-        return jsonify({"error": "No command found"}), 404
+        return jsonify({"error": "None"})
     return jsonify({"command": command})
 
 @app.route('/send_result', methods=['POST'])

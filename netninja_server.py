@@ -25,15 +25,17 @@ def ip_port_to_bytes(ip, port):
     ip_bytes = bytes(ip_parts) + port.to_bytes(2, 'big')
     return ip_bytes
 
+# Encrypt IP and port with Fernet
 def encrypt_ip_port(ip, port):
     ip_port_bytes = ip_port_to_bytes(ip, port)
     encrypted_data = cipher.encrypt(ip_port_bytes)
     base64_encoded = base64.urlsafe_b64encode(encrypted_data).decode()
-    return base64_encoded[:8], base64_encoded[8:]
+    return base64_encoded[:8], base64_encoded[8:]  # Use the first 8 chars for the connect code
 
-def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_port_remainder):
+def store_encrypted_ip(timestamp, pointer, encrypted_ip_port_remainder):
+    # Store pointer and encrypted remainder in point.txt without storing the full IP/Port
     with open(POINT_FILE, 'a') as f:
-        f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_port_remainder}\n")
+        f.write(f"{timestamp} {pointer} {encrypted_ip_port_remainder}\n")
 
 def lookup_encrypted_ip(pointer):
     current_time = time.time()
@@ -41,64 +43,41 @@ def lookup_encrypted_ip(pointer):
         lines = f.readlines()
     for line in lines:
         parts = line.strip().split()
-        if len(parts) == 4:
-            timestamp, stored_pointer, decryption_key, encrypted_ip_port_remainder = parts
+        if len(parts) == 3:
+            timestamp, stored_pointer, encrypted_ip_port_remainder = parts
             if stored_pointer == pointer and current_time - float(timestamp) < EXPIRATION_TIME:
-                return decryption_key, encrypted_ip_port_remainder
-    return None, None
+                return encrypted_ip_port_remainder
+    return None
 
-# New function to verify and translate connection codes into IP:PORT
+# Decrypt and verify IP and Port using translation process from the pointer and encrypted data
 def verify_and_get_ip_port(connection_code):
     pointer = connection_code[:4]
     encrypted_ip_prefix = connection_code[4:]
+    encrypted_ip_remainder = lookup_encrypted_ip(pointer)
 
-    decryption_key, encrypted_ip_remainder = lookup_encrypted_ip(pointer)
-    if decryption_key is None:
+    if encrypted_ip_remainder is None:
         return None, None  # Connection code is invalid or expired
 
-    # Reassemble the full encrypted IP:PORT
     full_encrypted_ip_port = encrypted_ip_prefix + encrypted_ip_remainder
     encrypted_data = base64.urlsafe_b64decode(full_encrypted_ip_port + '==')
-    cipher = Fernet(decryption_key.encode())
     decrypted_bytes = cipher.decrypt(encrypted_data)
 
-    # Translate decrypted bytes back into IP and port
     ip = '.'.join(map(str, decrypted_bytes[:4]))
     port = int.from_bytes(decrypted_bytes[4:], 'big')
     return ip, port
-
-# Function to update the timestamp in point.txt
-def update_timestamp(pointer):
-    current_time = time.time()
-    updated_lines = []
-    
-    with open(POINT_FILE, 'r') as f:
-        lines = f.readlines()
-
-    with open(POINT_FILE, 'w') as f:
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) == 4 and parts[1] == pointer:
-                updated_line = f"{current_time} {parts[1]} {parts[2]} {parts[3]}\n"
-                updated_lines.append(updated_line)
-            else:
-                updated_lines.append(line)
-
-        f.writelines(updated_lines)
 
 def generate_connection_code(ip, port):
     pointer = generate_pointer()
     encrypted_ip_prefix, encrypted_ip_remainder = encrypt_ip_port(ip, port)
     connection_code = pointer + encrypted_ip_prefix
     timestamp = time.time()
-    store_encrypted_ip(timestamp, pointer, FERNET_KEY, encrypted_ip_remainder)
+    store_encrypted_ip(timestamp, pointer, encrypted_ip_remainder)
     return connection_code
 
 @app.route('/get_code', methods=['POST'])
 def get_code():
     data = request.get_json()
     port = data.get("port")
-
     if not port:
         return jsonify({"error": "Port is required"}), 400
 
@@ -123,7 +102,6 @@ def connect():
     if not connection_code or len(connection_code) != 12:
         return jsonify({"error": "Invalid connection code format"}), 400
 
-    # Translate connection code to IP:PORT
     ip, port = verify_and_get_ip_port(connection_code)
     if ip is None or port is None:
         print("Pointer not found or expired.")
@@ -141,7 +119,6 @@ def send_command():
     if not code or not command:
         return jsonify({"error": "Connection code and command are required"}), 400
 
-    # Verify connection code before accepting the command
     ip, port = verify_and_get_ip_port(code)
     if ip is None:
         return jsonify({"error": "Invalid or expired connection code"}), 400
@@ -151,14 +128,13 @@ def send_command():
     pointer = code[:4]
 
     try:
-        # Attempt to run the command
+        # Run the command
         process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         output, error = process.communicate()
         
         if error:
-            return jsonify({"output": error.decode("utf-8")})  # Do not update timestamp on failure
+            return jsonify({"output": error.decode("utf-8")})
 
-        # Update the timestamp if the command is processed successfully
         update_timestamp(pointer)
         return jsonify({"output": output.decode("utf-8")})
     except Exception as e:
@@ -173,7 +149,6 @@ def end_connection():
     if not code or len(code) != 12:
         return jsonify({"error": "Invalid connection code format"}), 400
 
-    # Verify connection code and compare IPs to confirm origin
     ip, _ = verify_and_get_ip_port(code)
     current_ip = request.remote_addr
     if ip != current_ip:
@@ -205,8 +180,8 @@ def cleanup_old_keys():
         with open(POINT_FILE, 'w') as f:
             for line in lines:
                 parts = line.strip().split()
-                if len(parts) == 4:
-                    timestamp, pointer, decryption_key, encrypted_ip_port_remainder = parts
+                if len(parts) == 3:
+                    timestamp, pointer, encrypted_ip_port_remainder = parts
                     if current_time - float(timestamp) < EXPIRATION_TIME:
                         f.write(line)
 

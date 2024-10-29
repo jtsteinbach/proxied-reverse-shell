@@ -5,7 +5,7 @@ import random
 import string
 import base64
 import time
-import subprocess
+import requests
 import os
 
 app = Flask(__name__)
@@ -34,28 +34,21 @@ def encrypt_ip_port(ip, port):
     return base64_encoded[:8], base64_encoded[8:]
 
 def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_port_remainder):
-    try:
-        with open(POINT_FILE, 'a') as f:
-            f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_port_remainder}\n")
-        print(f"Stored pointer {pointer} in {POINT_FILE}")
-    except Exception as e:
-        print(f"Error writing to {POINT_FILE}: {e}")
+    with open(POINT_FILE, 'a') as f:
+        f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_port_remainder}\n")
+    print(f"Stored pointer {pointer} in {POINT_FILE}")
 
 def lookup_encrypted_ip(pointer):
-    try:
-        current_time = time.time()
-        with open(POINT_FILE, 'r') as f:
-            lines = f.readlines()
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) == 4:
-                timestamp, stored_pointer, decryption_key, encrypted_ip_port_remainder = parts
-                if stored_pointer == pointer and current_time - float(timestamp) < EXPIRATION_TIME:
-                    return decryption_key, encrypted_ip_port_remainder
-        return None, None
-    except FileNotFoundError:
-        print(f"{POINT_FILE} not found.")
-        return None, None
+    current_time = time.time()
+    with open(POINT_FILE, 'r') as f:
+        lines = f.readlines()
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) == 4:
+            timestamp, stored_pointer, decryption_key, encrypted_ip_port_remainder = parts
+            if stored_pointer == pointer and current_time - float(timestamp) < EXPIRATION_TIME:
+                return decryption_key, encrypted_ip_port_remainder
+    return None, None
 
 def verify_and_get_ip_port(connection_code):
     try:
@@ -64,7 +57,7 @@ def verify_and_get_ip_port(connection_code):
         decryption_key, encrypted_ip_remainder = lookup_encrypted_ip(pointer)
 
         if decryption_key is None:
-            return None, None  # Connection code is invalid or expired
+            return None, None
 
         full_encrypted_ip_port = encrypted_ip_prefix + encrypted_ip_remainder
         encrypted_data = base64.urlsafe_b64decode(full_encrypted_ip_port + '==')
@@ -158,22 +151,14 @@ def send_command():
     if ip is None:
         return jsonify({"error": "Invalid or expired connection code"}), 400
 
-    print(f"Received command: {command} for code: {code}")
-
     pointer = code[:4]
-
     try:
-        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        output, error = process.communicate()
-        
-        if error:
-            return jsonify({"output": error.decode("utf-8")})
-
+        response = requests.post(f"http://{ip}:{port}/execute_command", json={"command": command})
         update_timestamp(pointer)
-        return jsonify({"output": output.decode("utf-8")})
+        return jsonify({"output": response.json().get("output", "No response from receiver")})
     except Exception as e:
-        print(f"Command execution failed: {str(e)}")
-        return jsonify({"error": f"Command execution failed: {str(e)}"}), 500
+        print(f"Error forwarding command: {e}")
+        return jsonify({"error": f"Failed to send command: {str(e)}"}), 500
 
 @app.route('/end_connection', methods=['POST'])
 def end_connection():

@@ -155,7 +155,7 @@ def fetch_command():
     command = commands_dict.pop(pointer, None)
     if not command:
         return jsonify({"error": "None"})
-    return jsonify({"command": command})
+    return jsonify({"command": None})
 
 @app.route('/send_result', methods=['POST'])
 def send_result():

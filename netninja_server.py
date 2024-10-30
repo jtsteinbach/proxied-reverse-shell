@@ -3,23 +3,19 @@
 
 from flask import Flask, request, jsonify
 from cryptography.fernet import Fernet
-import threading
 import random
 import string
 import base64
 import time
-import os
+import redis
 
 app = Flask(__name__)
 
-# Generate a secure key for encryption
-POINT_FILE = 'point.txt'
+# Initialize Redis connection
+redis_client = redis.Redis(host='redis', port=6379, db=0, decode_responses=True)
+
 EXPIRATION_TIME = 1800  # Expiration in seconds (1 hour)
 MAX_COMMAND_ATTEMPTS = 10  # Limit the number of attempts to fetch command results
-
-# Store in-memory command and result dictionaries
-commands_dict = {}  # { pointer: command }
-results_dict = {}   # { pointer: result }
 
 # Generate a random 4-character pointer
 def generate_pointer():
@@ -37,7 +33,6 @@ def encrypt_ip_port(ip, port):
     # Generate a new passkey and cipher for each IP:PORT
     passkey = generate_passkey()
     cipher = Fernet(passkey)
-    print(f"Generated passkey: {passkey}")
 
     ip_port_bytes = ip_port_to_bytes(ip, port)
     encrypted_data = cipher.encrypt(ip_port_bytes)
@@ -46,21 +41,19 @@ def encrypt_ip_port(ip, port):
     # Return the middle section for connection code and passkey for storage
     return base64_encoded[20:28], base64_encoded[:20] + '*' + base64_encoded[28:], passkey
 
-
-def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_placeholder):
-    with open(POINT_FILE, 'a') as f:
-        f.write(f"{timestamp} {pointer} {decryption_key.decode()} {encrypted_ip_placeholder}\n")
+def store_encrypted_ip(pointer, passkey, encrypted_ip_placeholder):
+    # Store encrypted IP info in Redis with expiration
+    redis_client.hset(pointer, mapping={
+        'passkey': passkey.decode(),
+        'encrypted_ip_placeholder': encrypted_ip_placeholder
+    })
+    redis_client.expire(pointer, EXPIRATION_TIME)
 
 def lookup_encrypted_ip(pointer):
-    current_time = time.time()
-    with open(POINT_FILE, 'r') as f:
-        lines = f.readlines()
-    for line in lines:
-        parts = line.strip().split()
-        if len(parts) == 4:
-            timestamp, stored_pointer, decryption_key, encrypted_ip_placeholder = parts
-            if stored_pointer == pointer and current_time - float(timestamp) < EXPIRATION_TIME:
-                return decryption_key, encrypted_ip_placeholder
+    # Retrieve encrypted IP info from Redis
+    data = redis_client.hgetall(pointer)
+    if data:
+        return data['passkey'], data['encrypted_ip_placeholder']
     return None, None
 
 def verify_and_get_ip_port(connection_code):
@@ -79,27 +72,10 @@ def verify_and_get_ip_port(connection_code):
     port = int.from_bytes(decrypted_bytes[4:], 'big')
     return ip, port
 
-def update_timestamp(pointer):
-    current_time = time.time()
-    updated_lines = []
-    with open(POINT_FILE, 'r') as f:
-        lines = f.readlines()
-    with open(POINT_FILE, 'w') as f:
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) == 4 and parts[1] == pointer:
-                updated_line = f"{current_time} {parts[1]} {parts[2]} {parts[3]}\n"
-                updated_lines.append(updated_line)
-            else:
-                updated_lines.append(line)
-        f.writelines(updated_lines)
-
 def generate_connection_code(ip, port):
     pointer = generate_pointer()
     connection_code, encrypted_ip_placeholder, passkey = encrypt_ip_port(ip, port)
-    timestamp = time.time()
-    print(f"Storing connection: pointer={pointer}, passkey={passkey}, encrypted_ip={encrypted_ip_placeholder}") ###########################################
-    store_encrypted_ip(timestamp, pointer, passkey, encrypted_ip_placeholder)
+    store_encrypted_ip(pointer, passkey, encrypted_ip_placeholder)
     return pointer + connection_code
 
 @app.route('/get_code', methods=['POST'])
@@ -146,8 +122,8 @@ def send_command():
     if ip is None:
         return jsonify({"error": "Invalid or expired connection code"}), 400
 
-    commands_dict[code] = command
-    update_timestamp(pointer)
+    # Store command in Redis with expiration
+    redis_client.setex(f"command:{pointer}", EXPIRATION_TIME, command)
     return jsonify({"message": "Command sent to receiver"})
 
 @app.route('/fetch_command', methods=['POST'])
@@ -156,12 +132,12 @@ def fetch_command():
     code = data.get("code")
     pointer = code[:4]
 
-    command = commands_dict.pop(code, None)
+    # Retrieve and delete the command
+    command = redis_client.getdel(f"command:{pointer}")
     if command:
         return jsonify({"command": command})  # Send the command if available
     
-    # Return 'No Content' status with 204 when no command is available
-    return '', 204
+    return '', 204  # No Content status
 
 @app.route('/send_result', methods=['POST'])
 def send_result():
@@ -170,7 +146,8 @@ def send_result():
     result = data.get("result")
     pointer = code[:4]
 
-    results_dict[code] = result
+    # Store result in Redis with expiration
+    redis_client.setex(f"result:{pointer}", EXPIRATION_TIME, result)
     return jsonify({"message": "Result stored for sender"})
 
 @app.route('/fetch_result', methods=['POST'])
@@ -179,8 +156,9 @@ def fetch_result():
     code = data.get("code")
     pointer = code[:4]
 
-    result = results_dict.pop(code, "No response from server.")
-    return jsonify({"output": result})
+    # Retrieve and delete the result
+    result = redis_client.getdel(f"result:{pointer}")
+    return jsonify({"output": result or "No response from server."})
 
 @app.route('/end_connection', methods=['POST'])
 def end_connection():
@@ -192,33 +170,11 @@ def end_connection():
     if request.remote_addr != ip:
         return jsonify({"error": "Unauthorized request."}), 403
 
-    with open(POINT_FILE, 'r') as f:
-        lines = f.readlines()
-    with open(POINT_FILE, 'w') as f:
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) > 1 and parts[1] != pointer:
-                f.write(line)
-    commands_dict.pop(code, None)
-    results_dict.pop(code, None)
+    # Delete relevant keys from Redis
+    redis_client.delete(pointer)
+    redis_client.delete(f"command:{pointer}")
+    redis_client.delete(f"result:{pointer}")
     return jsonify({"message": "Connection ended successfully."})
-
-def cleanup_old_keys():
-    current_time = time.time()
-    if os.path.exists(POINT_FILE):
-        with open(POINT_FILE, 'r') as f:
-            lines = f.readlines()
-        with open(POINT_FILE, 'w') as f:
-            for line in lines:
-                parts = line.strip().split()
-                if len(parts) == 4:
-                    timestamp, pointer, decryption_key, encrypted_ip_placeholder = parts
-                    if current_time - float(timestamp) < EXPIRATION_TIME:
-                        f.write(line)
-
-cleanup_thread = threading.Thread(target=lambda: (time.sleep(600), cleanup_old_keys()))
-cleanup_thread.daemon = True
-cleanup_thread.start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=44444)

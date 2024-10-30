@@ -13,8 +13,7 @@ import os
 app = Flask(__name__)
 
 # Generate a secure key for encryption
-FERNET_KEY = Fernet.generate_key()
-cipher = Fernet(FERNET_KEY)
+cipher = Fernet(generate_passkey())
 POINT_FILE = 'point.txt'
 EXPIRATION_TIME = 1800  # Expiration in seconds (1 hour)
 MAX_COMMAND_ATTEMPTS = 10  # Limit the number of attempts to fetch command results
@@ -26,6 +25,9 @@ results_dict = {}   # { pointer: result }
 # Generate a random 4-character pointer
 def generate_pointer():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=4))
+
+def generate_passkey():
+    return Fernet.generate_key()
 
 def ip_port_to_bytes(ip, port):
     ip_parts = [int(part) for part in ip.split('.')]
@@ -87,9 +89,10 @@ def update_timestamp(pointer):
 
 def generate_connection_code(ip, port):
     pointer = generate_pointer()
+    passkey = generate_passkey()
     connection_code, encrypted_ip_placeholder = encrypt_ip_port(ip, port)
     timestamp = time.time()
-    store_encrypted_ip(timestamp, pointer, FERNET_KEY, encrypted_ip_placeholder)
+    store_encrypted_ip(timestamp, pointer, passkey, encrypted_ip_placeholder)
     return pointer + connection_code
 
 @app.route('/get_code', methods=['POST'])
@@ -136,7 +139,7 @@ def send_command():
     if ip is None:
         return jsonify({"error": "Invalid or expired connection code"}), 400
 
-    commands_dict[pointer] = command
+    commands_dict[code] = command
     update_timestamp(pointer)
     return jsonify({"message": "Command sent to receiver"})
 
@@ -146,7 +149,7 @@ def fetch_command():
     code = data.get("code")
     pointer = code[:4]
 
-    command = commands_dict.pop(pointer, None)
+    command = commands_dict.pop(code, None)
     if command:
         return jsonify({"command": command})  # Send the command if available
     
@@ -160,7 +163,7 @@ def send_result():
     result = data.get("result")
     pointer = code[:4]
 
-    results_dict[pointer] = result
+    results_dict[code] = result
     return jsonify({"message": "Result stored for sender"})
 
 @app.route('/fetch_result', methods=['POST'])
@@ -169,7 +172,7 @@ def fetch_result():
     code = data.get("code")
     pointer = code[:4]
 
-    result = results_dict.pop(pointer, "No response from server.")
+    result = results_dict.pop(code, "No response from server.")
     return jsonify({"output": result})
 
 @app.route('/end_connection', methods=['POST'])
@@ -189,8 +192,8 @@ def end_connection():
             parts = line.strip().split()
             if len(parts) > 1 and parts[1] != pointer:
                 f.write(line)
-    commands_dict.pop(pointer, None)
-    results_dict.pop(pointer, None)
+    commands_dict.pop(code, None)
+    results_dict.pop(code, None)
     return jsonify({"message": "Connection ended successfully."})
 
 def cleanup_old_keys():

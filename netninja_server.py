@@ -13,7 +13,6 @@ import os
 app = Flask(__name__)
 
 # Generate a secure key for encryption
-cipher = Fernet(generate_passkey())
 POINT_FILE = 'point.txt'
 EXPIRATION_TIME = 1800  # Expiration in seconds (1 hour)
 MAX_COMMAND_ATTEMPTS = 10  # Limit the number of attempts to fetch command results
@@ -28,6 +27,7 @@ def generate_pointer():
 
 def generate_passkey():
     return Fernet.generate_key()
+cipher = Fernet(generate_passkey())
 
 def ip_port_to_bytes(ip, port):
     ip_parts = [int(part) for part in ip.split('.')]

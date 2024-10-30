@@ -27,7 +27,6 @@ def generate_pointer():
 
 def generate_passkey():
     return Fernet.generate_key()
-cipher = Fernet(generate_passkey())
 
 def ip_port_to_bytes(ip, port):
     ip_parts = [int(part) for part in ip.split('.')]
@@ -35,10 +34,17 @@ def ip_port_to_bytes(ip, port):
     return ip_bytes
 
 def encrypt_ip_port(ip, port):
+    # Generate a new passkey and cipher for each IP:PORT
+    passkey = generate_passkey()
+    cipher = Fernet(passkey)
+
     ip_port_bytes = ip_port_to_bytes(ip, port)
     encrypted_data = cipher.encrypt(ip_port_bytes)
     base64_encoded = base64.urlsafe_b64encode(encrypted_data).decode()
-    return base64_encoded[20:28], base64_encoded[:20] + '*' + base64_encoded[28:]
+    
+    # Return the middle section for connection code and passkey for storage
+    return base64_encoded[20:28], base64_encoded[:20] + '*' + base64_encoded[28:], passkey
+
 
 def store_encrypted_ip(timestamp, pointer, decryption_key, encrypted_ip_placeholder):
     with open(POINT_FILE, 'a') as f:

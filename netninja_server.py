@@ -96,7 +96,7 @@ def update_timestamp(pointer):
 
 def generate_connection_code(ip, port):
     pointer = generate_pointer()
-    connection_code, encrypted_ip_placeholder = encrypt_ip_port(ip, port)
+    connection_code, encrypted_ip_placeholder, passkey = encrypt_ip_port(ip, port)
     timestamp = time.time()
     print(f"Storing connection: pointer={pointer}, passkey={passkey}, encrypted_ip={encrypted_ip_placeholder}") ###########################################
     store_encrypted_ip(timestamp, pointer, passkey, encrypted_ip_placeholder)

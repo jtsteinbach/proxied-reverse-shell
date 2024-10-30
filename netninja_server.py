@@ -1,6 +1,8 @@
 # Net Ninja | Flask Server Software
 # Created By: JT STEINBACH
 
+# Version: 1.4-BETA
+
 from flask import Flask, request, jsonify
 from cryptography.fernet import Fernet
 from urllib.parse import urlparse
@@ -26,7 +28,7 @@ redis_client = redis.Redis(
     decode_responses=True
 )
 
-EXPIRATION_TIME = 1800  # Expiration in seconds (1 hour)
+EXPIRATION_TIME = 1800  # Expiration in seconds (0.5 hour)
 MAX_COMMAND_ATTEMPTS = 10  # Limit the number of attempts to fetch command results
 
 # Generate a random 4-character pointer
@@ -141,11 +143,20 @@ def send_command():
 
     # Store command in Redis with expiration
     redis_client.setex(f"command:{pointer}", EXPIRATION_TIME, command)
-
-    # Publish notification for new command
-    redis_client.publish(f"channel:{pointer}", "new_command")
-    
     return jsonify({"message": "Command sent to receiver"})
+
+@app.route('/fetch_command', methods=['POST'])
+def fetch_command():
+    data = request.get_json()
+    code = data.get("code")
+    pointer = code[:4]
+
+    # Retrieve and delete the command
+    command = redis_client.getdel(f"command:{pointer}")
+    if command:
+        return jsonify({"command": command})  # Send the command if available
+    
+    return '', 204  # No Content status
 
 @app.route('/send_result', methods=['POST'])
 def send_result():

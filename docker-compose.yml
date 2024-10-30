@@ -4,19 +4,22 @@ services:
   redis:
     image: redis:alpine
     networks:
-      - internal_network
-    command: ["redis-server", "--bind", "0.0.0.0"]  # Internal only
+      - internal_network  # Internal-only network
+    command: ["redis-server", "--bind", "0.0.0.0"]
 
   flask_app:
     build:
       context: .  # This assumes your Dockerfile is in the current directory
     ports:
-      - "44444:44444"  # Expose only Flask app's port
+      - "44444:44444"  # Expose Flask app publicly
     networks:
-      - internal_network
+      - internal_network  # Connect to the internal network for Redis
+      - external_network  # Expose Flask app externally
     depends_on:
       - redis
 
 networks:
   internal_network:
     driver: bridge
+  external_network:
+    driver: bridge  # This allows Flask to be accessible externally

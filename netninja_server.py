@@ -3,6 +3,7 @@
 
 from flask import Flask, request, jsonify
 from cryptography.fernet import Fernet
+from urllib.parse import urlparse
 import random
 import string
 import base64
@@ -11,11 +12,15 @@ import redis
 
 app = Flask(__name__)
 
+parsed_url = urlparse(os.getenv("SCALINGO_REDIS_URL"))
+redis_pass = parsed_url.password
+redis_host = f"{parsed_url.hostname}:{parsed_url.port}"
+
 # Initialize Redis connection
 redis_client = redis.Redis(
-    host='net-ninja-main-4842.redis.b.osc-fr1.scalingo-dbs.com',
+    host=f'{redis_host}',
     port=30757,
-    password='wJz_jmMYj7Xq7zUyKeqy8OqZ_Z0AIkC8798xf5_xoUjNCOWu_VXNR_kmCxXJ7Kh0',
+    password=f'{redis_pass}',
     db=0,
     decode_responses=True
 )

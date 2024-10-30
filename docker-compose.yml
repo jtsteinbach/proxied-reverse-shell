@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:alpine
+    networks:
+      - internal_network
+    command: ["redis-server", "--bind", "0.0.0.0"]  # Internal only
+
+  flask_app:
+    build:
+      context: .  # This assumes your Dockerfile is in the current directory
+    ports:
+      - "44444:44444"  # Expose only Flask app's port
+    networks:
+      - internal_network
+    depends_on:
+      - redis
+
+networks:
+  internal_network:
+    driver: bridge

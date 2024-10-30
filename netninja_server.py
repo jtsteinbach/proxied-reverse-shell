@@ -73,10 +73,14 @@ def verify_and_get_ip_port(connection_code):
     return ip, port
 
 def generate_connection_code(ip, port):
-    pointer = generate_pointer()
-    connection_code, encrypted_ip_placeholder, passkey = encrypt_ip_port(ip, port)
-    store_encrypted_ip(pointer, passkey, encrypted_ip_placeholder)
-    return pointer + connection_code
+    try:
+        pointer = generate_pointer()
+        connection_code, encrypted_ip_placeholder, passkey = encrypt_ip_port(ip, port)
+        store_encrypted_ip(pointer, passkey, encrypted_ip_placeholder)
+        return pointer + connection_code
+    except Exception as e:
+        print(f"[ERROR] generate_connection_code: {e}")  # Log the specific error
+        raise
 
 @app.route('/get_code', methods=['POST'])
 def get_code():
@@ -93,6 +97,7 @@ def get_code():
         connection_code = generate_connection_code(client_ip, port)
         return jsonify({"code": connection_code})
     except Exception as e:
+        print(f"[ERROR] Failed to create connection code: {e}")  # Log the error
         return jsonify({"error": f"Failed to create connection code: {str(e)}"}), 500
 
 @app.route('/connect', methods=['POST'])

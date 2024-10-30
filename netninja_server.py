@@ -12,7 +12,12 @@ import redis
 app = Flask(__name__)
 
 # Initialize Redis connection
-redis_client = redis.Redis(host='redis', port=6379, db=0, decode_responses=True)
+redis_client = redis.Redis(
+    host='net-ninja-main-4842.redis.b.osc-fr1.scalingo-dbs.com',
+    port=30757,
+    db=0,
+    decode_responses=True
+)
 
 EXPIRATION_TIME = 1800  # Expiration in seconds (1 hour)
 MAX_COMMAND_ATTEMPTS = 10  # Limit the number of attempts to fetch command results

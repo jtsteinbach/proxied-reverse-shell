@@ -19,7 +19,7 @@ redis_host = f"{parsed_url.hostname}:{parsed_url.port}"
 
 # Initialize Redis connection
 redis_client = redis.Redis(
-    host=f'{redis_host}',
+    host=f'{parsed_url.hostname}',
     port=int(parsed_url.port),
     password=f'{redis_pass}',
     db=0,

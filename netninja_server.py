@@ -1,7 +1,7 @@
 # Net Ninja | Flask Server Software
 # Created By: JT STEINBACH
 
-# Version: 1.4-BETA
+# Version: 1.4.1-BETA
 
 from flask import Flask, request, jsonify
 from cryptography.fernet import Fernet

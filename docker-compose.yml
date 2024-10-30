@@ -9,14 +9,15 @@ services:
 
   flask_app:
     build:
-      context: .  # This assumes your Dockerfile is in the current directory
+      context: .
     ports:
-      - "44444:44444"  # Expose Flask app publicly
+      - "44444:44444"
     networks:
-      - internal_network  # Connect to the internal network for Redis
-      - external_network  # Expose Flask app externally
+      - internal_network
+      - external_network
     depends_on:
       - redis
+    entrypoint: ["./wait-for-redis.sh", "redis", "python", "netninja_server.py"]
 
 networks:
   internal_network:

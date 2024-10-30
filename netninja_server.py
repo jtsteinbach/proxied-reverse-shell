@@ -37,6 +37,7 @@ def encrypt_ip_port(ip, port):
     # Generate a new passkey and cipher for each IP:PORT
     passkey = generate_passkey()
     cipher = Fernet(passkey)
+    print(f"Generated passkey: {passkey}")
 
     ip_port_bytes = ip_port_to_bytes(ip, port)
     encrypted_data = cipher.encrypt(ip_port_bytes)
@@ -98,6 +99,7 @@ def generate_connection_code(ip, port):
     passkey = generate_passkey()
     connection_code, encrypted_ip_placeholder = encrypt_ip_port(ip, port)
     timestamp = time.time()
+    print(f"Storing connection: pointer={pointer}, passkey={passkey}, encrypted_ip={encrypted_ip_placeholder}") ###########################################
     store_encrypted_ip(timestamp, pointer, passkey, encrypted_ip_placeholder)
     return pointer + connection_code
 

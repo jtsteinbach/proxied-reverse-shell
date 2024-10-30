@@ -12,7 +12,6 @@ import base64
 import time
 import redis
 import os
-import uuid  # For token generation
 
 app = Flask(__name__)
 
@@ -40,8 +39,9 @@ def generate_pointer():
 def generate_passkey():
     return Fernet.generate_key()
 
-def generate_token():
-    return str(uuid.uuid4())  # Generate a unique token for each request
+# Generate a random token
+def generate_token(length=16):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
 def ip_port_to_bytes(ip, port):
     ip_parts = [int(part) for part in ip.split('.')]

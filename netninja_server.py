@@ -1,6 +1,8 @@
 # Net Ninja | Flask Server Software
 # Created By: JT STEINBACH
 
+# Version: 1.4.1-BETA
+
 from flask import Flask, request, jsonify
 from cryptography.fernet import Fernet
 from urllib.parse import urlparse
@@ -27,6 +29,7 @@ redis_client = redis.Redis(
 )
 
 EXPIRATION_TIME = 1800  # Expiration in seconds (0.5 hour)
+MAX_COMMAND_ATTEMPTS = 10  # Limit the number of attempts to fetch command results
 
 # Generate a random 4-character pointer
 def generate_pointer():
@@ -41,14 +44,19 @@ def ip_port_to_bytes(ip, port):
     return ip_bytes
 
 def encrypt_ip_port(ip, port):
+    # Generate a new passkey and cipher for each IP:PORT
     passkey = generate_passkey()
     cipher = Fernet(passkey)
+
     ip_port_bytes = ip_port_to_bytes(ip, port)
     encrypted_data = cipher.encrypt(ip_port_bytes)
     base64_encoded = base64.urlsafe_b64encode(encrypted_data).decode()
+    
+    # Return the middle section for connection code and passkey for storage
     return base64_encoded[20:28], base64_encoded[:20] + '*' + base64_encoded[28:], passkey
 
 def store_encrypted_ip(pointer, passkey, encrypted_ip_placeholder):
+    # Store encrypted IP info in Redis with expiration
     redis_client.hset(pointer, mapping={
         'passkey': passkey.decode(),
         'encrypted_ip_placeholder': encrypted_ip_placeholder
@@ -56,6 +64,7 @@ def store_encrypted_ip(pointer, passkey, encrypted_ip_placeholder):
     redis_client.expire(pointer, EXPIRATION_TIME)
 
 def lookup_encrypted_ip(pointer):
+    # Retrieve encrypted IP info from Redis
     data = redis_client.hgetall(pointer)
     if data:
         return data['passkey'], data['encrypted_ip_placeholder']
@@ -67,13 +76,25 @@ def verify_and_get_ip_port(connection_code):
     decryption_key, encrypted_ip_placeholder = lookup_encrypted_ip(pointer)
     if not decryption_key:
         return None, None
+
     full_encrypted_ip_port = encrypted_ip_placeholder.replace('*', encrypted_code_section)
     encrypted_data = base64.urlsafe_b64decode(full_encrypted_ip_port + '==')
     cipher = Fernet(decryption_key.encode())
     decrypted_bytes = cipher.decrypt(encrypted_data)
+
     ip = '.'.join(map(str, decrypted_bytes[:4]))
     port = int.from_bytes(decrypted_bytes[4:], 'big')
     return ip, port
+
+def generate_connection_code(ip, port):
+    try:
+        pointer = generate_pointer()
+        connection_code, encrypted_ip_placeholder, passkey = encrypt_ip_port(ip, port)
+        store_encrypted_ip(pointer, passkey, encrypted_ip_placeholder)
+        return pointer + connection_code
+    except Exception as e:
+        print(f"[ERROR] generate_connection_code: {e}")  # Log the specific error
+        raise
 
 @app.route('/get_code', methods=['POST'])
 def get_code():
@@ -87,11 +108,10 @@ def get_code():
         return jsonify({"error": "Failed to obtain client IP"}), 500
 
     try:
-        pointer = generate_pointer()
-        connection_code, encrypted_ip_placeholder, passkey = encrypt_ip_port(client_ip, port)
-        store_encrypted_ip(pointer, passkey, encrypted_ip_placeholder)
-        return jsonify({"code": pointer + connection_code})
+        connection_code = generate_connection_code(client_ip, port)
+        return jsonify({"code": connection_code})
     except Exception as e:
+        print(f"[ERROR] Failed to create connection code: {e}")  # Log the error
         return jsonify({"error": f"Failed to create connection code: {str(e)}"}), 500
 
 @app.route('/connect', methods=['POST'])

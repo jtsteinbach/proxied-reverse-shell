@@ -15,7 +15,6 @@ app = Flask(__name__)
 redis_client = redis.Redis(
     host='net-ninja-main-4842.redis.b.osc-fr1.scalingo-dbs.com',
     port=30757,
-    username='default',
     password='YjCU72yX28B@@Pz',
     db=0,
     decode_responses=True

@@ -141,20 +141,11 @@ def send_command():
 
     # Store command in Redis with expiration
     redis_client.setex(f"command:{pointer}", EXPIRATION_TIME, command)
-    return jsonify({"message": "Command sent to receiver"})
 
-@app.route('/fetch_command', methods=['POST'])
-def fetch_command():
-    data = request.get_json()
-    code = data.get("code")
-    pointer = code[:4]
-
-    # Retrieve and delete the command
-    command = redis_client.getdel(f"command:{pointer}")
-    if command:
-        return jsonify({"command": command})  # Send the command if available
+    # Publish notification for new command
+    redis_client.publish(f"channel:{pointer}", "new_command")
     
-    return '', 204  # No Content status
+    return jsonify({"message": "Command sent to receiver"})
 
 @app.route('/send_result', methods=['POST'])
 def send_result():
